@@ -1,23 +1,26 @@
 //! See [README.md](https://github.com/slava-sh/rust-bundler/blob/master/README.md)
-extern crate cargo_metadata;
-extern crate quote;
-extern crate rustfmt;
-extern crate syn;
-
 use std::fs::File;
-use std::io::{Read, Sink};
+use std::io::Read;
 use std::mem;
 use std::path::Path;
 
 use quote::ToTokens;
+use syn;
 use syn::punctuated::Punctuated;
 use syn::visit_mut::VisitMut;
+
+use cargo_metadata::{self, MetadataCommand, CargoOpt};
 
 /// Creates a single-source-file version of a Cargo package.
 pub fn bundle<P: AsRef<Path>>(package_path: P) -> String {
     let manifest_path = package_path.as_ref().join("Cargo.toml");
-    let metadata = cargo_metadata::metadata_deps(Some(&manifest_path), false)
+    let metadata = MetadataCommand::new()
+        .manifest_path(manifest_path)
+        .features(CargoOpt::AllFeatures)
+        .no_deps()
+        .exec()
         .expect("failed to obtain cargo metadata");
+
     let targets = &metadata.packages[0].targets;
     let bins: Vec<_> = targets.iter().filter(|t| target_is(t, "bin")).collect();
     assert!(bins.len() != 0, "no binary target found");
@@ -37,8 +40,9 @@ pub fn bundle<P: AsRef<Path>>(package_path: P) -> String {
         base_path,
         crate_name,
     }.visit_file_mut(&mut file);
-    let code = file.into_tokens().to_string();
-    prettify(code)
+    let code = file.into_token_stream().to_string();
+    // Don't support rustfmt, since we'll just run it anyway.
+    code
 }
 
 fn target_is(target: &cargo_metadata::Target, target_kind: &str) -> bool {
@@ -166,7 +170,7 @@ fn is_extern_crate(item: &syn::Item, crate_name: &str) -> bool {
 
 fn path_starts_with(path: &syn::Path, segment: &str) -> bool {
     if let Some(el) = path.segments.first() {
-        if el.value().ident == segment {
+        if el.ident == segment {
             return true;
         }
     }
@@ -188,13 +192,4 @@ fn read_file(path: &Path) -> Option<String> {
     let mut buf = String::new();
     File::open(path).ok()?.read_to_string(&mut buf).ok()?;
     Some(buf)
-}
-
-fn prettify(code: String) -> String {
-    let config = Default::default();
-    let out: Option<&mut Sink> = None;
-    let result =
-        rustfmt::format_input(rustfmt::Input::Text(code), &config, out).expect("rustfmt failed");
-    let code = &result.1.first().expect("rustfmt returned no code").1;
-    format!("{}", code)
 }
